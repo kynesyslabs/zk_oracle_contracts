@@ -15,6 +15,17 @@ contract ZKOracleRegistry {
     address public owner;
     uint256 public threshold;
 
+    /// @notice When true, submitVote is halted. Lets the owner stop the flow
+    ///         while recovering from a bad entry instead of the registry being
+    ///         wedged with no way to intervene.
+    bool public paused;
+
+    /// @notice Reject a submitted Demos block that jumps more than this far past
+    ///         the latest finalised one. Guards against a single garbage value
+    ///         (a bad node read) fixing `latestRoot` so high that every honest
+    ///         submission afterwards reverts as stale. 0 disables the check.
+    uint256 public maxBlockAdvance;
+
     mapping(address => bool) public isOracle;
     address[] public oracleList;
 
@@ -48,6 +59,15 @@ contract ZKOracleRegistry {
     event OracleRemoved(address indexed oracle);
     event ThresholdChanged(uint256 previousThreshold, uint256 newThreshold);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event Paused(address indexed by);
+    event Unpaused(address indexed by);
+    event MaxBlockAdvanceChanged(uint256 previous, uint256 next);
+    event RootCorrected(
+        bytes32 indexed rootHash,
+        uint256 demosBlockNumber,
+        uint256 leafCount,
+        uint256 timestamp
+    );
 
     error NotOwner();
     error NotOracle();
@@ -56,6 +76,9 @@ contract ZKOracleRegistry {
     error InvalidThreshold();
     error OracleAlreadyExists();
     error OracleNotFound();
+    error IsPaused();
+    error NotPaused();
+    error BlockJumpTooLarge(uint256 submitted, uint256 latest, uint256 maxAdvance);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -64,6 +87,11 @@ contract ZKOracleRegistry {
 
     modifier onlyOracle() {
         if (!isOracle[msg.sender]) revert NotOracle();
+        _;
+    }
+
+    modifier whenNotPaused() {
+        if (paused) revert IsPaused();
         _;
     }
 
@@ -90,9 +118,16 @@ contract ZKOracleRegistry {
         bytes32 rootHash,
         uint256 demosBlockNumber,
         uint256 leafCount
-    ) external onlyOracle {
-        if (demosBlockNumber <= latestRoot.demosBlockNumber) {
-            revert StaleRoot(demosBlockNumber, latestRoot.demosBlockNumber);
+    ) external onlyOracle whenNotPaused {
+        uint256 latest = latestRoot.demosBlockNumber;
+        if (demosBlockNumber <= latest) {
+            revert StaleRoot(demosBlockNumber, latest);
+        }
+        // Reject an implausible forward jump before it becomes the new latest —
+        // otherwise it can only be undone by an owner correction. Skipped for
+        // the first root (latest == 0), which has no baseline to bound against.
+        if (maxBlockAdvance != 0 && latest != 0 && demosBlockNumber - latest > maxBlockAdvance) {
+            revert BlockJumpTooLarge(demosBlockNumber, latest, maxBlockAdvance);
         }
 
         bytes32 voteKey = keccak256(abi.encode(rootHash, demosBlockNumber, leafCount));
@@ -154,6 +189,48 @@ contract ZKOracleRegistry {
         address previous = owner;
         owner = newOwner;
         emit OwnershipTransferred(previous, newOwner);
+    }
+
+    // ─── Owner: recovery & safety ─────────────────────────────────────────────
+
+    /// @notice Halt submitVote — used to stop the flow while correcting a bad
+    ///         entry, so votes don't pile onto a state that's about to change.
+    function pause() external onlyOwner {
+        if (paused) revert IsPaused();
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    function unpause() external onlyOwner {
+        if (!paused) revert NotPaused();
+        paused = false;
+        emit Unpaused(msg.sender);
+    }
+
+    /// @notice Set the maximum allowed forward jump in Demos block number per
+    ///         submission (0 disables the guard).
+    function setMaxBlockAdvance(uint256 newMax) external onlyOwner {
+        uint256 previous = maxBlockAdvance;
+        maxBlockAdvance = newMax;
+        emit MaxBlockAdvanceChanged(previous, newMax);
+    }
+
+    /// @notice Overwrite `latestRoot` to recover from a bad finalisation — the
+    ///         escape hatch the registry previously lacked. Because it can lower
+    ///         `demosBlockNumber`, a garbage value that wedged the registry can
+    ///         be undone and normal voting resumed.
+    ///
+    ///         This is a trusted action: like every other write here it asserts
+    ///         truth rather than proving it (see contract notes on the missing
+    ///         on-chain verification). It emits `RootCorrected` so every use is
+    ///         auditable on-chain. Intended to be run while paused.
+    function adminSetLatestRoot(
+        bytes32 rootHash,
+        uint256 demosBlockNumber,
+        uint256 leafCount
+    ) external onlyOwner {
+        _finaliseRoot(rootHash, demosBlockNumber, leafCount);
+        emit RootCorrected(rootHash, demosBlockNumber, leafCount, block.timestamp);
     }
 
     // ─── Views ────────────────────────────────────────────────────────────────
