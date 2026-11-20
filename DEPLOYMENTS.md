@@ -15,7 +15,9 @@
   - its verifier carries the single-party v1 key (`files.demos.sh/zk-circuits/v1/`),
     not the ceremony-final key, so proofs from the SDK and node do not verify;
   - it has no chain epochs, so roots of a reset Demos chain stay valid.
-- Pause it (`pause()`) and point no consumer at it.
+- `pause()` only stops voting. Its `verifyIdentity` / `checkIdentity` have no pause
+  check, so the forgeable inclusion path stays live on that address for good. No
+  consumer may call it or trust an `IdentityVerified` event from it.
 
 ## Trust model
 
@@ -24,14 +26,15 @@
   `pause` / `adminSetLatestRoot` / `revokeRoot` / `startEpoch` provide recovery.
 - **Inclusion, trustless.** `verifyIdentity(a, b, c, [nullifier, context, merkleRoot])`
   verifies a Groth16 proof of membership against a root finalised in the current
-  epoch and burns the nullifier (replay-proof). `checkIdentity(...)` is the
-  non-mutating view.
+  epoch and burns the nullifier for the calling address (replay-proof per
+  consumer). `checkIdentity(...)` is the non-mutating view.
 
 ## Consuming inclusion verification
 
 Generate a proof client-side with the SDK `ProofGenerator` (against the current
 merkle root from the node's `/zk/merkle-root`), then call `verifyIdentity` /
-`checkIdentity`. Format the calldata with `snarkjs zkey export soliditycalldata`;
+`checkIdentity` from the consumer's own contract (see the README, "Consuming
+inclusion proofs"). Format the calldata with `snarkjs zkey export soliditycalldata`;
 snarkjs emits the `B` point with its coordinate pair swapped for the Solidity
 verifier's expected order. Public signals are `[nullifier, context, merkleRoot]`.
 

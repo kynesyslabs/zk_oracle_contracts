@@ -25,8 +25,14 @@ interface IZKVerifier {
  *
  *   2. Inclusion (trustless): `verifyIdentity` accepts a Groth16 proof that a
  *      commitment is included in a root finalised in the current epoch, verifies
- *      it on-chain against the circuit's verifier, and burns the nullifier so a
- *      proof can't be replayed.
+ *      it on-chain against the circuit's verifier, and burns the nullifier for
+ *      the calling address so a proof can't be replayed against that caller.
+ *
+ *   Consumers call `verifyIdentity` from their own contract and derive the proof
+ *   context from that contract's address. Nullifiers are spent per caller, so a
+ *   third party replaying a user's proof first burns it only for itself, and two
+ *   applications never share a nullifier space. The proof carries no binding to
+ *   who submits it: `IdentityVerified.caller` says who called, not who proved.
  */
 contract ZKIdentityRegistry {
     /// @dev Positions in the circuit's public signals.
@@ -71,10 +77,14 @@ contract ZKIdentityRegistry {
     ///         older epoch describe a chain that no longer exists.
     mapping(bytes32 => uint256) public rootEpoch;
 
-    /// @notice Spent nullifiers, so a given (identity, context) proof verifies once.
-    ///         Kept across epochs: a consumer that wants a fresh claim per chain
-    ///         must use a per-chain context.
-    mapping(uint256 => bool) public nullifierUsed;
+    /// @notice Spent nullifiers per caller, so a given (identity, context) proof
+    ///         verifies once for each consumer. Kept across epochs: a consumer that
+    ///         wants a fresh claim per chain must use a per-chain context.
+    mapping(address => mapping(uint256 => bool)) public nullifierUsed;
+
+    /// @notice Roots the owner revoked. Permanent, so a revoked root cannot come
+    ///         back through a later vote or an admin correction.
+    mapping(bytes32 => bool) public revokedRoot;
 
     mapping(bytes32 => mapping(address => bool)) private _voted;
     mapping(bytes32 => uint256) public voteCount;
@@ -111,6 +121,7 @@ contract ZKIdentityRegistry {
     error NotPaused();
     error RootNotFinalised(bytes32 root);
     error NullifierAlreadyUsed(uint256 nullifier);
+    error RootIsRevoked(bytes32 root);
     error InvalidProof();
     error ZeroAddress();
     error ZeroValue();
@@ -161,6 +172,7 @@ contract ZKIdentityRegistry {
     {
         if (genesisHash != epochGenesisHash) revert WrongEpoch(genesisHash, epochGenesisHash);
         if (rootHash == bytes32(0)) revert ZeroValue();
+        if (revokedRoot[rootHash]) revert RootIsRevoked(rootHash);
 
         // Only monotonic, with no upper bound on the gap: the tree changes only
         // on registrations, so a long quiet spell is a legitimately large jump.
@@ -184,8 +196,8 @@ contract ZKIdentityRegistry {
 
     /**
      * @notice Verify a Groth16 proof that a commitment is included in a merkle
-     *         root finalised in the current epoch, and burn its nullifier.
-     *         Public signals are [nullifier, context, merkleRoot].
+     *         root finalised in the current epoch, and burn its nullifier for
+     *         msg.sender. Public signals are [nullifier, context, merkleRoot].
      * @return true on success (reverts otherwise).
      */
     function verifyIdentity(uint[2] calldata a, uint[2][2] calldata b, uint[2] calldata c, uint[3] calldata pubSignals)
@@ -196,22 +208,23 @@ contract ZKIdentityRegistry {
         bytes32 root = bytes32(pubSignals[SIGNAL_MERKLE_ROOT]);
 
         if (!isFinalisedRoot(root)) revert RootNotFinalised(root);
-        if (nullifierUsed[nullifier]) revert NullifierAlreadyUsed(nullifier);
+        if (nullifierUsed[msg.sender][nullifier]) revert NullifierAlreadyUsed(nullifier);
         if (!verifier.verifyProof(a, b, c, pubSignals)) revert InvalidProof();
 
-        nullifierUsed[nullifier] = true;
+        nullifierUsed[msg.sender][nullifier] = true;
         emit IdentityVerified(nullifier, root, pubSignals[SIGNAL_CONTEXT], msg.sender);
         return true;
     }
 
-    /// @notice Non-mutating check (no nullifier burn) for a caller that only
-    ///         wants to know a proof is valid against a current-epoch root.
+    /// @notice Non-mutating check (no nullifier burn): true when `verifyIdentity`
+    ///         called by msg.sender with this proof would succeed now.
     function checkIdentity(uint[2] calldata a, uint[2][2] calldata b, uint[2] calldata c, uint[3] calldata pubSignals)
         external
         view
         returns (bool)
     {
         if (!isFinalisedRoot(bytes32(pubSignals[SIGNAL_MERKLE_ROOT]))) return false;
+        if (nullifierUsed[msg.sender][pubSignals[SIGNAL_NULLIFIER]]) return false;
         return verifier.verifyProof(a, b, c, pubSignals);
     }
 
@@ -301,9 +314,14 @@ contract ZKIdentityRegistry {
     /// @notice Stop accepting proofs against a root finalised by mistake. Needed
     ///         besides adminSetLatestRoot: a wrong root stays usable for
     ///         inclusion until revoked, even after the latest root moves on.
+    ///         When it is the latest root, the latest root is cleared too, so the
+    ///         next honest vote is not refused as stale against a bad height.
     function revokeRoot(bytes32 rootHash) external onlyOwner {
-        if (!isFinalisedRoot(rootHash)) revert RootNotFinalised(rootHash);
+        if (rootHash == bytes32(0)) revert ZeroValue();
+        if (revokedRoot[rootHash]) revert RootIsRevoked(rootHash);
+        revokedRoot[rootHash] = true;
         rootEpoch[rootHash] = 0;
+        if (latestRoot.rootHash == rootHash) delete latestRoot;
         emit RootRevoked(epochId, rootHash);
     }
 
@@ -383,6 +401,7 @@ contract ZKIdentityRegistry {
     }
 
     function _finaliseRoot(bytes32 rootHash, uint256 demosBlockNumber, uint256 leafCount) internal {
+        if (revokedRoot[rootHash]) revert RootIsRevoked(rootHash);
         uint256 id = epochId;
         RootEntry memory entry = RootEntry({
             rootHash: rootHash,

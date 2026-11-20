@@ -172,6 +172,48 @@ contract ZKIdentityRegistryTest is Test {
         reg.verifyIdentity(a, b, c, _pub(1, CONTEXT, ROOT));
     }
 
+    function test_RevokingTheLatestRootClearsIt() public {
+        _finalise(ROOT, 9_999_999); // a bad height came with the bad root
+        reg.revokeRoot(ROOT);
+        (bytes32 r, uint256 blk,,,) = reg.getLatestRoot();
+        assertEq(r, bytes32(0));
+        assertEq(blk, 0);
+
+        bytes32 honest = bytes32(uint256(0x600d));
+        _finalise(honest, BLK); // not refused as stale against the bad height
+        assertTrue(reg.isFinalisedRoot(honest));
+    }
+
+    function test_RevokedRootCannotComeBack() public {
+        _finalise(ROOT, BLK);
+        reg.revokeRoot(ROOT);
+
+        vm.prank(oracle1);
+        vm.expectRevert(abi.encodeWithSelector(ZKIdentityRegistry.RootIsRevoked.selector, ROOT));
+        reg.submitVote(GENESIS, ROOT, BLK + 1, LEAVES);
+
+        vm.expectRevert(abi.encodeWithSelector(ZKIdentityRegistry.RootIsRevoked.selector, ROOT));
+        reg.adminSetLatestRoot(ROOT, BLK + 1, LEAVES);
+
+        vm.expectRevert(abi.encodeWithSelector(ZKIdentityRegistry.RootIsRevoked.selector, ROOT));
+        reg.revokeRoot(ROOT);
+
+        reg.startEpoch(GENESIS_2);
+        vm.prank(oracle1);
+        vm.expectRevert(abi.encodeWithSelector(ZKIdentityRegistry.RootIsRevoked.selector, ROOT));
+        reg.submitVote(GENESIS_2, ROOT, 1, LEAVES);
+    }
+
+    function test_RevokingAnOlderRootKeepsTheLatest() public {
+        _finalise(ROOT, BLK);
+        bytes32 next = bytes32(uint256(0xbeef));
+        _finalise(next, BLK + 1);
+        reg.revokeRoot(ROOT);
+        (bytes32 r,,,,) = reg.getLatestRoot();
+        assertEq(r, next);
+        assertTrue(reg.isFinalisedRoot(next));
+    }
+
     // ── chain epochs ───────────────────────────────────────────────────────────
 
     function test_VoteForOtherGenesisReverts() public {
@@ -321,7 +363,26 @@ contract ZKIdentityRegistryTest is Test {
         bool ok = reg.verifyIdentity(a, b, c, _pub(nullifier, CONTEXT, ROOT));
 
         assertTrue(ok);
-        assertTrue(reg.nullifierUsed(nullifier));
+        assertTrue(reg.nullifierUsed(user, nullifier));
+        assertFalse(reg.nullifierUsed(address(this), nullifier), "spent only for the caller");
+    }
+
+    /// Anyone can submit a user's proof. Submitting it first must not burn the
+    /// nullifier for the consumer the user meant it for.
+    function test_FrontRunningThirdPartyDoesNotBlockConsumer() public {
+        _finalise(ROOT, BLK);
+        address consumer = address(0xC0FFEE);
+        address attacker = address(0xBAD);
+        uint[3] memory pub = _pub(4242, CONTEXT, ROOT);
+
+        vm.prank(attacker);
+        reg.verifyIdentity(a, b, c, pub);
+
+        vm.prank(consumer);
+        assertTrue(reg.checkIdentity(a, b, c, pub));
+        vm.prank(consumer);
+        assertTrue(reg.verifyIdentity(a, b, c, pub));
+        assertTrue(reg.nullifierUsed(consumer, 4242));
     }
 
     /// The prover picks the context freely. A proof whose context equals a
@@ -360,9 +421,18 @@ contract ZKIdentityRegistryTest is Test {
     function test_CheckIdentityIsNonMutating() public {
         _finalise(ROOT, BLK);
         assertTrue(reg.checkIdentity(a, b, c, _pub(5, 3, ROOT)));
-        assertFalse(reg.nullifierUsed(5), "view must not burn the nullifier");
+        assertFalse(reg.nullifierUsed(address(this), 5), "view must not burn the nullifier");
 
         // unfinalised root -> false, not revert
         assertFalse(reg.checkIdentity(a, b, c, _pub(5, 3, bytes32(uint256(0x999)))));
+    }
+
+    function test_CheckIdentityFalseOnceTheCallerSpentTheNullifier() public {
+        _finalise(ROOT, BLK);
+        uint[3] memory pub = _pub(6, 3, ROOT);
+        reg.verifyIdentity(a, b, c, pub);
+        assertFalse(reg.checkIdentity(a, b, c, pub), "spent for this caller");
+        vm.prank(user);
+        assertTrue(reg.checkIdentity(a, b, c, pub), "still unspent for another caller");
     }
 }

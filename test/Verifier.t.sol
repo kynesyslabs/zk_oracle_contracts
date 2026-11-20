@@ -100,6 +100,6 @@ contract VerifierTest is Test {
 
         reg.submitVote(GENESIS, root, 10, 1);
         assertTrue(reg.verifyIdentity(p.a, p.b, p.c, p.pub));
-        assertTrue(reg.nullifierUsed(p.pub[0]));
+        assertTrue(reg.nullifierUsed(address(this), p.pub[0]));
     }
 }

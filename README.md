@@ -61,13 +61,29 @@ chain's block-0 hash (`getChainIdentity` → `genesisHash` on the node):
 - Nullifiers are kept across epochs. An application that wants one claim per chain
   should put the chain into its proof context.
 
+## Consuming inclusion proofs
+
+- Call `verifyIdentity` from your own contract, not from an EOA, and derive the
+  proof context from your contract's address (plus any per-use salt). Nullifiers
+  are spent per caller (`nullifierUsed(caller, nullifier)`): someone replaying a
+  user's proof first burns it only for their own address, and two applications
+  never collide.
+- A proof is not bound to its submitter. `IdentityVerified.caller` is whoever
+  called, which proves nothing about who generated the proof; tie the claim to an
+  account inside your own contract.
+- `checkIdentity` answers for `msg.sender`: false once that caller spent the
+  nullifier.
+- `revokeRoot` is permanent: a revoked root never verifies again, cannot be voted
+  or set back, and clears the latest root when it is the latest.
+
 ## Contract interface
 
 | Function | Access | Description |
 |---|---|---|
 | `submitVote(genesisHash, rootHash, blockNumber, leafCount)` | oracle | Vote for a root of the current epoch |
-| `verifyIdentity(a, b, c, [nullifier, context, root])` | anyone | Verify a proof against a current-epoch root, burn the nullifier |
-| `checkIdentity(a, b, c, [nullifier, context, root])` | view | Same check without burning |
+| `verifyIdentity(a, b, c, [nullifier, context, root])` | anyone | Verify a proof against a current-epoch root, burn the nullifier for the caller |
+| `checkIdentity(a, b, c, [nullifier, context, root])` | view | Same check without burning (false if the caller spent it) |
+| `nullifierUsed(caller, nullifier)`, `revokedRoot(root)` | view | Spent nullifiers per caller, revoked roots |
 | `isFinalisedRoot(root)` | view | Root finalised in the current epoch |
 | `getLatestRoot()` / `latestRoot()` | view | Latest root `(root, block, leafCount, updatedAt, epochId)` |
 | `currentEpoch()` | view | `(epochId, genesisHash)` |
