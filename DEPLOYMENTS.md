@@ -1,6 +1,6 @@
 # Deployments
 
-## Sepolia (chainId 11155111) — 2026-08-11
+## Ethereum Sepolia (chainId 11155111), 2026-08-11: RETIRED, do not use
 
 | Contract | Address |
 |---|---|
@@ -8,33 +8,37 @@
 | `Groth16Verifier` (identity_with_merkle) | `0x07F4dABF1D9671A3b9eAacD4013bD2557aA0da7A` |
 
 - **Owner / initial oracle:** `0x288DFc0fF2560C885e3d2C1Fa6904750BeC8380d`
-- **Circuit:** `identity_with_merkle` (Groth16, BN254). Proving key + wasm are served
-  from `https://files.demos.sh/zk-circuits/v1/`; the verifier's verification key matches
-  that zkey (checked with `snarkjs zkey export verificationkey`).
-- **Public signals (order):** `[nullifier, merkleRoot, context]`.
+- Unsafe, superseded by the next deployment of this repository:
+  - it read the merkle root from public signal 1, which is the prover-chosen
+    context, so a proof against a private tree passed by setting its context to a
+    finalised root;
+  - its verifier carries the single-party v1 key (`files.demos.sh/zk-circuits/v1/`),
+    not the ceremony-final key, so proofs from the SDK and node do not verify;
+  - it has no chain epochs, so roots of a reset Demos chain stay valid.
+- `pause()` only stops voting. Its `verifyIdentity` / `checkIdentity` have no pause
+  check, so the forgeable inclusion path stays live on that address for good. No
+  consumer may call it or trust an `IdentityVerified` event from it.
 
 ## Trust model
 
-- **Root finalisation — trusted committee.** Whitelisted oracles vote a Poseidon merkle
-  root; once `threshold` agree, it's finalised. Add operators + raise the threshold to
-  decentralise without redeploying. `pause` / `adminSetLatestRoot` / `maxBlockAdvance`
-  provide recovery.
-- **Inclusion — trustless.** `verifyIdentity(a, b, c, [nullifier, merkleRoot, context])`
-  verifies a Groth16 proof of membership against a *finalised* root and burns the
-  nullifier (replay-proof). `checkIdentity(...)` is the non-mutating view. So a claim
-  stands without trusting the caller: the committee vouches for the root, the proof
-  proves membership.
+- **Root finalisation, trusted committee.** Whitelisted oracles vote a Poseidon
+  merkle root of the current chain epoch; once `threshold` agree, it is finalised.
+  `pause` / `adminSetLatestRoot` / `revokeRoot` / `startEpoch` provide recovery;
+  `pause` also stops `verifyIdentity` / `checkIdentity`.
+- **Inclusion, trustless.** `verifyIdentity(a, b, c, [nullifier, context, merkleRoot])`
+  verifies a Groth16 proof of membership against a root finalised in the current
+  epoch and burns the nullifier for the calling address (replay-proof per
+  consumer). `checkIdentity(...)` is the non-mutating view.
 
 ## Consuming inclusion verification
 
-Generate a proof client-side with the SDK `ProofGenerator` (against the current merkle
-root from the node's `/zk/merkle-root`), then call `verifyIdentity` / `checkIdentity`.
-Format the calldata with `snarkjs zkey export soliditycalldata` — note snarkjs emits the
-`B` point with its coordinate pair swapped for the Solidity verifier's expected order.
+Generate a proof client-side with the SDK `ProofGenerator` (against the current
+merkle root from the node's `/zk/merkle-root`), then call `verifyIdentity` /
+`checkIdentity` from the consumer's own contract (see the README, "Consuming
+inclusion proofs"). Format the calldata with `snarkjs zkey export soliditycalldata`;
+snarkjs emits the `B` point with its coordinate pair swapped for the Solidity
+verifier's expected order. Public signals are `[nullifier, context, merkleRoot]`.
 
 ## Deploy
 
-```bash
-INITIAL_ORACLE=0x... EVM_RPC_URL=https://... \
-  forge script script/DeployZKIdentity.s.sol --rpc-url "$EVM_RPC_URL" --private-key "$PK" --broadcast
-```
+See the README, "Deploy" and "Production deployment".
