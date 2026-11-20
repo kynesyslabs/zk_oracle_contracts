@@ -91,7 +91,7 @@ chain's block-0 hash (`getChainIdentity` → `genesisHash` on the node):
 | `currentVoteKey`, `getVoteCount`, `hasVoted` | view | Pending votes of the current epoch and oracle set |
 | `addOracle`, `removeOracle`, `setThreshold` | owner | Committee management (events on every change) |
 | `startEpoch(genesisHash)` | owner | Track a new or reset Demos chain |
-| `pause`, `unpause` | owner | Halt voting |
+| `pause`, `unpause` | owner | Halt voting and inclusion checks (`verifyIdentity` reverts, `checkIdentity` returns false) |
 | `adminSetLatestRoot`, `revokeRoot` | owner | Recover from a bad finalisation |
 | `transferOwnership(newOwner)`, `acceptOwnership()` | owner / pending owner | Two-step ownership transfer |
 
@@ -107,7 +107,7 @@ forge script script/DeployZKIdentity.s.sol \
   --rpc-url "$EVM_RPC_URL" --account <deployer> --broadcast
 ```
 
-The script deploys `Groth16Verifier` and `ZKIdentityRegistry(INITIAL_ORACLE,
+The script deploys `Groth16Verifier` and `ZKIdentityRegistry(ORACLES, THRESHOLD,
 verifier, DEMOS_GENESIS_HASH)` and, when `OWNER` is set, starts the ownership
 transfer to it; the new owner must call `acceptOwnership()`.
 
@@ -121,6 +121,8 @@ Required before the registry backs anything of value:
   administered by the Safe, and accept it from there.
 - **At least 3 oracles from independent operators, threshold ≥ 2.** Each oracle
   reads several Demos nodes and only votes on a quorum of identical answers.
+  The committee and its threshold are constructor arguments, so the registry is
+  never live with a smaller committee while ownership is being handed over.
 - **Oracle keys are separate from the owner key**, one key per oracle, held only by
   that oracle's operator.
 - Record every deployment in `DEPLOYMENTS.md`, including the epoch genesis hash.

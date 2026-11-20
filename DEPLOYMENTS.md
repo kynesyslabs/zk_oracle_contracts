@@ -23,7 +23,8 @@
 
 - **Root finalisation, trusted committee.** Whitelisted oracles vote a Poseidon
   merkle root of the current chain epoch; once `threshold` agree, it is finalised.
-  `pause` / `adminSetLatestRoot` / `revokeRoot` / `startEpoch` provide recovery.
+  `pause` / `adminSetLatestRoot` / `revokeRoot` / `startEpoch` provide recovery;
+  `pause` also stops `verifyIdentity` / `checkIdentity`.
 - **Inclusion, trustless.** `verifyIdentity(a, b, c, [nullifier, context, merkleRoot])`
   verifies a Groth16 proof of membership against a root finalised in the current
   epoch and burns the nullifier for the calling address (replay-proof per

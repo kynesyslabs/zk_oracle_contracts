@@ -44,9 +44,14 @@ contract ZKIdentityRegistryTest is Test {
     uint[2][2] b = [[uint256(3), 4], [uint256(5), 6]];
     uint[2] c = [uint256(7), 8];
 
+    function _one(address o) internal pure returns (address[] memory list) {
+        list = new address[](1);
+        list[0] = o;
+    }
+
     function setUp() public {
         verifier = new MockVerifier();
-        reg = new ZKIdentityRegistry(oracle1, address(verifier), GENESIS);
+        reg = new ZKIdentityRegistry(_one(oracle1), 1, address(verifier), GENESIS);
     }
 
     function _vote(address oracle, bytes32 root, uint256 blk) internal {
@@ -67,17 +72,55 @@ contract ZKIdentityRegistryTest is Test {
 
     function test_ConstructorRejectsZeroVerifier() public {
         vm.expectRevert(ZKIdentityRegistry.ZeroAddress.selector);
-        new ZKIdentityRegistry(oracle1, address(0), GENESIS);
+        new ZKIdentityRegistry(_one(oracle1), 1, address(0), GENESIS);
     }
 
     function test_ConstructorRejectsZeroOracle() public {
         vm.expectRevert(ZKIdentityRegistry.ZeroAddress.selector);
-        new ZKIdentityRegistry(address(0), address(verifier), GENESIS);
+        new ZKIdentityRegistry(_one(address(0)), 1, address(verifier), GENESIS);
+    }
+
+    function test_ConstructorRejectsEmptyCommittee() public {
+        vm.expectRevert(ZKIdentityRegistry.InvalidThreshold.selector);
+        new ZKIdentityRegistry(new address[](0), 1, address(verifier), GENESIS);
+    }
+
+    function test_ConstructorRejectsThresholdOutOfRange() public {
+        vm.expectRevert(ZKIdentityRegistry.InvalidThreshold.selector);
+        new ZKIdentityRegistry(_one(oracle1), 0, address(verifier), GENESIS);
+        vm.expectRevert(ZKIdentityRegistry.InvalidThreshold.selector);
+        new ZKIdentityRegistry(_one(oracle1), 2, address(verifier), GENESIS);
+    }
+
+    function test_ConstructorRejectsDuplicateOracle() public {
+        address[] memory list = new address[](2);
+        list[0] = oracle1;
+        list[1] = oracle1;
+        vm.expectRevert(ZKIdentityRegistry.OracleAlreadyExists.selector);
+        new ZKIdentityRegistry(list, 2, address(verifier), GENESIS);
+    }
+
+    /// The committee is whole from the first block: one oracle alone finalises nothing.
+    function test_ConstructorSetsWholeCommittee() public {
+        address[] memory list = new address[](3);
+        list[0] = oracle1;
+        list[1] = oracle2;
+        list[2] = oracle3;
+        ZKIdentityRegistry r = new ZKIdentityRegistry(list, 2, address(verifier), GENESIS);
+        assertEq(r.oracleCount(), 3);
+        assertEq(r.threshold(), 2);
+
+        vm.prank(oracle1);
+        r.submitVote(GENESIS, ROOT, BLK, LEAVES);
+        assertFalse(r.isFinalisedRoot(ROOT));
+        vm.prank(oracle3);
+        r.submitVote(GENESIS, ROOT, BLK, LEAVES);
+        assertTrue(r.isFinalisedRoot(ROOT));
     }
 
     function test_ConstructorRejectsZeroGenesis() public {
         vm.expectRevert(ZKIdentityRegistry.ZeroValue.selector);
-        new ZKIdentityRegistry(oracle1, address(verifier), bytes32(0));
+        new ZKIdentityRegistry(_one(oracle1), 1, address(verifier), bytes32(0));
     }
 
     function test_ConstructorOpensFirstEpoch() public view {
@@ -153,6 +196,21 @@ contract ZKIdentityRegistryTest is Test {
         vm.prank(oracle1);
         vm.expectRevert(ZKIdentityRegistry.IsPaused.selector);
         reg.submitVote(GENESIS, ROOT, BLK, LEAVES);
+    }
+
+    function test_PauseHaltsInclusionChecks() public {
+        _finalise(ROOT, BLK);
+        reg.pause();
+
+        vm.startPrank(user);
+        assertFalse(reg.checkIdentity(a, b, c, _pub(4919, CONTEXT, ROOT)));
+        vm.expectRevert(ZKIdentityRegistry.IsPaused.selector);
+        reg.verifyIdentity(a, b, c, _pub(4919, CONTEXT, ROOT));
+        vm.stopPrank();
+
+        reg.unpause();
+        vm.prank(user);
+        assertTrue(reg.verifyIdentity(a, b, c, _pub(4919, CONTEXT, ROOT)));
     }
 
     function test_AdminSetLatestRootRecoversAndFinalises() public {

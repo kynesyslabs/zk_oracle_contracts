@@ -142,18 +142,24 @@ contract ZKIdentityRegistry {
     }
 
     /**
-     * @param initialOracle Address of the first oracle (single-oracle mode out of the box).
-     * @param verifier_     Deployed Groth16 verifier for the identity_with_merkle circuit.
-     * @param genesisHash   Block-0 hash of the Demos chain the first epoch tracks.
+     * @param initialOracles The whole oracle committee. It is set here, with its
+     *                       threshold, so the registry never accepts votes from a
+     *                       smaller committee than the one it is meant to run with.
+     * @param threshold_     Votes needed to finalise a root, 1..initialOracles.length.
+     * @param verifier_      Deployed Groth16 verifier for the identity_with_merkle circuit.
+     * @param genesisHash    Block-0 hash of the Demos chain the first epoch tracks.
      */
-    constructor(address initialOracle, address verifier_, bytes32 genesisHash) {
+    constructor(address[] memory initialOracles, uint256 threshold_, address verifier_, bytes32 genesisHash) {
         if (verifier_ == address(0)) revert ZeroAddress();
         owner = msg.sender;
         emit OwnershipTransferred(address(0), msg.sender);
         verifier = IZKVerifier(verifier_);
-        _addOracle(initialOracle);
-        threshold = 1;
-        emit ThresholdChanged(0, 1);
+        for (uint256 i = 0; i < initialOracles.length; i++) {
+            _addOracle(initialOracles[i]);
+        }
+        if (threshold_ == 0 || threshold_ > initialOracles.length) revert InvalidThreshold();
+        threshold = threshold_;
+        emit ThresholdChanged(0, threshold_);
         _startEpoch(genesisHash);
     }
 
@@ -198,10 +204,13 @@ contract ZKIdentityRegistry {
      * @notice Verify a Groth16 proof that a commitment is included in a merkle
      *         root finalised in the current epoch, and burn its nullifier for
      *         msg.sender. Public signals are [nullifier, context, merkleRoot].
+     *         Reverts while the registry is paused: pause is the stop for a
+     *         broken verifier key or circuit, not only for voting.
      * @return true on success (reverts otherwise).
      */
     function verifyIdentity(uint[2] calldata a, uint[2][2] calldata b, uint[2] calldata c, uint[3] calldata pubSignals)
         external
+        whenNotPaused
         returns (bool)
     {
         uint256 nullifier = pubSignals[SIGNAL_NULLIFIER];
@@ -223,6 +232,7 @@ contract ZKIdentityRegistry {
         view
         returns (bool)
     {
+        if (paused) return false;
         if (!isFinalisedRoot(bytes32(pubSignals[SIGNAL_MERKLE_ROOT]))) return false;
         if (nullifierUsed[msg.sender][pubSignals[SIGNAL_NULLIFIER]]) return false;
         return verifier.verifyProof(a, b, c, pubSignals);

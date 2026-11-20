@@ -65,6 +65,11 @@ contract VerifierTest is Test {
         uint[3] pub;
     }
 
+    function _one(address o) internal pure returns (address[] memory list) {
+        list = new address[](1);
+        list[0] = o;
+    }
+
     function _proof() internal view returns (Proof memory p) {
         string memory json = vm.readFile(PROOF);
         uint256[] memory a = vm.parseJsonUintArray(json, ".a");
@@ -89,7 +94,7 @@ contract VerifierTest is Test {
 
     function test_RealProofThroughRegistryUsesSignalTwoAsRoot() public {
         Groth16Verifier verifier = new Groth16Verifier();
-        ZKIdentityRegistry reg = new ZKIdentityRegistry(address(this), address(verifier), GENESIS);
+        ZKIdentityRegistry reg = new ZKIdentityRegistry(_one(address(this)), 1, address(verifier), GENESIS);
         Proof memory p = _proof();
         string memory json = vm.readFile(PROOF);
         bytes32 root = bytes32(vm.parseJsonUint(json, ".root"));
