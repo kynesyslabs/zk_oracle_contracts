@@ -1,6 +1,7 @@
 {
   "name": "zk-oracle-contracts",
   "version": "0.1.0",
+  "license": "MIT",
   "description": "ZKOracleRegistry Solidity contract and deployment scripts",
   "type": "module",
   "scripts": {
